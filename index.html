@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="hu">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SRT Hanggenerátor</title>
+    
+    <!-- Tailwind CSS v4 CDN (mert package.json-ben van) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- LameJS MP3 encoder CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
+    
+    <style>
+      body {
+        font-family: 'Inter', sans-serif;
+        background-color: #0f172a;
+        color: #f1f5f9;
+      }
+      /* Custom scrollbar */
+      ::-webkit-scrollbar { width: 8px; }
+      ::-webkit-scrollbar-track { background: #1e293b; }
+      ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- VITE ENTRY POINT -->
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
