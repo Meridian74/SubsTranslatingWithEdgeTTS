@@ -17,10 +17,9 @@ const TOOLS: AITool[] = [
   {
     id: ToolId.SRT_AUDIO_GENERATOR,
     title: "Magyar felirat Felolvasó",
-    description: "Magyar nyelvű .srt fájlok felolvasása Microsoft Edge-TTS neurális hangokkal, időzítés tartásával, letölthető audio formátumban.",
+    description: "Magyar SRT feliratokat hangfájllá (MP3) Microsoft Edge-TTS neurális magyar hangokkal. Alapértelmezett: férfi hang.",
     icon: <AudioIcon />
   }
-  // A fordító kártya ELTÁVOLÍTVA
 ];
 
 export default function App() {
