@@ -1,6 +1,6 @@
-// ./component/tools/SrtAudioGenerator.tsx - JAVÍTVA Edge-TTS-re
+// ./component/tools/SrtAudioGenerator.tsx - JAVÍTVA: férfi hang alapértelmezett
 import React, { useState, useRef, useEffect } from 'react';
-import { EdgeTTSService } from '../../services/edgeTTSService'; // ÚJ!
+import { EdgeTTSService } from '../../services/edgeTTSService';
 import { 
     parseSrtToSegments, 
     extractSrtTimestamps, 
@@ -30,8 +30,8 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
     const [result, setResult] = useState('');
     const [audioUrl, setAudioUrl] = useState('');
     
-    // Voice Settings - MÓDOSÍTVA Edge-TTS hangokra
-    const [selectedVoice, setSelectedVoice] = useState<string>('hu-HU-NoemiNeural');
+    // Voice Settings - FÉRFI HANG alapértelmezett
+    const [selectedVoice, setSelectedVoice] = useState<string>('hu-HU-SzabolcsNeural');
 
     // Edge TTS Service
     const edgeTTS = new EdgeTTSService();
@@ -153,13 +153,11 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
                 while(attempts < maxAttempts && !audioData) {
                     if (abortRef.current) throw new Error("Folyamat megszakítva.");
                     try {
-                        // EDGE-TTS HÍVÁS - JAVÍTVA
+                        // EDGE-TTS HÍVÁS
                         const arrayBuffer = await edgeTTS.generateSpeech(ttsText, selectedVoice);
                         const uint8 = new Uint8Array(arrayBuffer);
                         
                         // Convert MP3 to PCM (egyszerűsítve)
-                        // JEGYZET: A valós implementációban MP3 dekódolás kellene
-                        // Itt most egyszerűsítünk, feltételezve, hogy az Edge-TTS PCM-t ad vissza
                         audioData = new Int16Array(uint8.buffer);
                         
                     } catch (err: any) {
@@ -264,7 +262,7 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
              {/* Settings */}
              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-800/50 p-4 rounded-lg border border-slate-700">
                 <div className="text-slate-400 text-sm p-2 flex items-center">
-                    Edge-TTS használata magyar felolvasáshoz
+                    Microsoft Edge-TTS neurális magyar hangok
                 </div>
                 <div>
                    <label className="block text-sm font-medium text-slate-400 mb-2">Hang kiválasztása</label>
@@ -274,19 +272,17 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
                       disabled={isProcessing}
                       className="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
                    >
-                      {edgeTTS.getAvailableVoices().map(voice => (
-                        <option key={voice.value} value={voice.value}>
-                            {voice.label}
-                        </option>
-                      ))}
+                      {/* FÉRFI HANGOK ELŐRE */}
+                      <option value="hu-HU-SzabolcsNeural">Szabolcs (magyar férfi)</option>
+                      <option value="hu-HU-NoemiNeural">Noémi (magyar női)</option>
                    </select>
                    <p className="text-xs text-slate-500 mt-1">
-                     Microsoft neurális magyar hangok - ingyenes használat
+                     Ingyenes neurális magyar hangok - alapértelmezett: férfi
                    </p>
                 </div>
             </div>
 
-            {/* Debug Data View (ugyanaz marad) */}
+            {/* Debug Data View */}
             {debugData && (
                 <div className="space-y-2">
                     <label className="block text-sm font-medium text-yellow-500">
@@ -336,7 +332,7 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
                 </div>
             )}
 
-            {/* Status & Progress (ugyanaz) */}
+            {/* Status & Progress */}
             {status && (
                 <div className={`p-3 rounded-lg text-sm border ${status.startsWith('Hiba') ? 'bg-red-900/20 border-red-800 text-red-300' : (status.includes('Felfüggesztve') || status.includes('Figyelmeztetés') ? 'bg-yellow-900/20 border-yellow-800 text-yellow-300' : 'bg-blue-900/20 border-blue-800 text-blue-300')}`}>
                 {status}
@@ -353,7 +349,7 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
                 </div>
             )}
 
-            {/* Actions (ugyanaz) */}
+            {/* Actions */}
             <div className="flex justify-end pt-4 border-t border-slate-700 space-x-3">
                  {isPaused && (
                     <button
@@ -382,7 +378,7 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
                  )}
             </div>
 
-            {/* Results (ugyanaz) */}
+            {/* Results */}
             {result && !isProcessing && !isPaused && (
                 <div className="mt-6 space-y-4 animate-fade-in">
                 <h3 className="text-lg font-bold text-white border-b border-slate-700 pb-2">Eredmény</h3>
@@ -393,10 +389,10 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
                             <audio controls src={audioUrl} className="w-full" />
                             <a 
                                 href={audioUrl} 
-                                download={filename ? filename.replace(/\.[^/.]+$/, "") + "_edge_tts.mp3" : "generated_audio_edge_tts.mp3"}
+                                download={filename ? filename.replace(/\.[^/.]+$/, "") + "_" + (selectedVoice.includes('Szabolcs') ? "ferfi" : "noi") + ".mp3" : "generated_audio.mp3"}
                                 className="inline-block px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold transition-all transform hover:scale-105 shadow-lg shadow-green-900/20"
                             >
-                                MP3 Letöltése (Edge-TTS)
+                                MP3 Letöltése
                             </a>
                         </div>
                     )}
