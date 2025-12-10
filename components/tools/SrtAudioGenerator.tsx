@@ -1,6 +1,6 @@
-// ./component/tools/SrtAudioGenerator.tsx - JAVÍTVA: férfi hang alapértelmezett
+// ./component/tools/SrtAudioGenerator.tsx - JAVÍTVA: új service használata
 import React, { useState, useRef, useEffect } from 'react';
-import { EdgeTTSService } from '../../services/edgeTTSService';
+import { edgeTTSService } from '../../services/edgeTTSService'; // ← MÓDOSÍTVA: import a singleton service-ből
 import { 
     parseSrtToSegments, 
     extractSrtTimestamps, 
@@ -30,11 +30,10 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
     const [result, setResult] = useState('');
     const [audioUrl, setAudioUrl] = useState('');
     
-    // Voice Settings - FÉRFI HANG alapértelmezett
+    // Voice Settings
     const [selectedVoice, setSelectedVoice] = useState<string>('hu-HU-SzabolcsNeural');
-
-    // Edge TTS Service
-    const edgeTTS = new EdgeTTSService();
+    const [availableVoices, setAvailableVoices] = useState<Array<{value: string, label: string}>>([]);
+    const [apiStatus, setApiStatus] = useState<string>('API kapcsolat ellenőrzése...');
 
     // Debug View State
     const [debugData, setDebugData] = useState<string>('');
@@ -63,12 +62,54 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
         }
     }, [fileContent]);
 
+    // Hangok és API állapot betöltése komponens mount-kor
+    useEffect(() => {
+        loadVoicesAndApiStatus();
+    }, []);
+
     // Auto-scroll debug view
     useEffect(() => {
         if (activeDebugRowRef.current) {
             activeDebugRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
     }, [currentSegmentIndex]);
+
+    const loadVoicesAndApiStatus = async () => {
+        try {
+            setStatus('API kapcsolat ellenőrzése...');
+            
+            // 1. API állapot ellenőrzése
+            const statusInfo = await edgeTTSService.getApiStatus();
+            setApiStatus(statusInfo.message);
+            
+            // 2. Hangok betöltése
+            const voices = await edgeTTSService.getAvailableVoices();
+            setAvailableVoices(voices);
+            
+            // 3. Alapértelmezett hang beállítása
+            if (voices.length > 0) {
+                // Keressük a férfi hangot először
+                const maleVoice = voices.find(v => v.label.includes('férfi'));
+                if (maleVoice) {
+                    setSelectedVoice(maleVoice.value);
+                } else {
+                    setSelectedVoice(voices[0].value);
+                }
+            }
+            
+            console.log(`API állapot: ${statusInfo.message}, ${voices.length} hang`);
+            
+        } catch (error) {
+            console.error('API inicializálás hiba:', error);
+            setApiStatus('Hiba az API kapcsolatban');
+            
+            // Fallback hangok
+            setAvailableVoices([
+                { value: 'hu-HU-SzabolcsNeural', label: 'Szabolcs (magyar férfi)' },
+                { value: 'hu-HU-NoemiNeural', label: 'Noémi (magyar női)' },
+            ]);
+        }
+    };
 
     const handleAbort = () => {
         abortRef.current = true;
@@ -153,8 +194,8 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
                 while(attempts < maxAttempts && !audioData) {
                     if (abortRef.current) throw new Error("Folyamat megszakítva.");
                     try {
-                        // EDGE-TTS HÍVÁS
-                        const arrayBuffer = await edgeTTS.generateSpeech(ttsText, selectedVoice);
+                        // EDGE-TTS HÍVÁS az új service-n keresztül
+                        const arrayBuffer = await edgeTTSService.generateSpeech(ttsText, selectedVoice);
                         const uint8 = new Uint8Array(arrayBuffer);
                         
                         // Convert MP3 to PCM (egyszerűsítve)
@@ -261,23 +302,30 @@ export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileConten
         <div className="space-y-6 animate-fade-in">
              {/* Settings */}
              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-800/50 p-4 rounded-lg border border-slate-700">
-                <div className="text-slate-400 text-sm p-2 flex items-center">
-                    Microsoft Edge-TTS neurális magyar hangok
+                <div className="text-slate-400 text-sm p-2 flex flex-col">
+                    <span>Edge-TTS Backend</span>
+                    <span className="text-xs mt-1 text-blue-300">{apiStatus}</span>
                 </div>
                 <div>
                    <label className="block text-sm font-medium text-slate-400 mb-2">Hang kiválasztása</label>
                    <select 
                       value={selectedVoice}
                       onChange={(e) => setSelectedVoice(e.target.value)}
-                      disabled={isProcessing}
+                      disabled={isProcessing || availableVoices.length === 0}
                       className="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
                    >
-                      {/* FÉRFI HANGOK ELŐRE */}
-                      <option value="hu-HU-SzabolcsNeural">Szabolcs (magyar férfi)</option>
-                      <option value="hu-HU-NoemiNeural">Noémi (magyar női)</option>
+                      {availableVoices.length === 0 ? (
+                          <option value="">Hangok betöltése...</option>
+                      ) : (
+                          availableVoices.map((voice) => (
+                              <option key={voice.value} value={voice.value}>
+                                  {voice.label}
+                              </option>
+                          ))
+                      )}
                    </select>
                    <p className="text-xs text-slate-500 mt-1">
-                     Ingyenes neurális magyar hangok - alapértelmezett: férfi
+                     {availableVoices.length} magyar hang elérhető
                    </p>
                 </div>
             </div>
