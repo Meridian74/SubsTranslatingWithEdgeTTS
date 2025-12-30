@@ -1,450 +1,295 @@
-// ./component/tools/SrtAudioGenerator.tsx - JAVÍTVA: új service használata
+// ./component/tools/SrtAudioGenerator.tsx
 import React, { useState, useRef, useEffect } from 'react';
-import { edgeTTSService } from '../../services/edgeTTSService'; // ← MÓDOSÍTVA: import a singleton service-ből
+import { edgeTTSService, TTSConnectionError } from '../../services/edgeTTSService';
 import { 
     parseSrtToSegments, 
     extractSrtTimestamps, 
     validateAndFixSegments, 
-    getSrtEndSeconds, 
     sanitizeTextForTts, 
-    createSilence, 
-    base64ToUint8Array, 
-    speedUpPcm, 
-    pcmToMp3, 
     playSuccessChime, 
-    playWarningSound, 
+    playWarningSound,
+    pcmToMp3,
     sleep 
 } from '../../utils';
 
 interface SrtAudioGeneratorProps {
     fileContent: string;
     filename: string;
+    onAbort?: () => void;
 }
 
-export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ fileContent, filename }) => {
-    // UI State
+const decodeAudioData = async (arrayBuffer: ArrayBuffer): Promise<AudioBuffer> => {
+    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    return await audioCtx.decodeAudioData(arrayBuffer);
+};
+
+export const SrtAudioGenerator: React.FC<SrtAudioGeneratorProps> = ({ 
+    fileContent, 
+    filename,
+    onAbort 
+}) => {
     const [isProcessing, setIsProcessing] = useState(false);
     const [isPaused, setIsPaused] = useState(false);
     const [status, setStatus] = useState('');
     const [progress, setProgress] = useState(0);
     const [result, setResult] = useState('');
     const [audioUrl, setAudioUrl] = useState('');
-    
-    // Voice Settings
-    const [selectedVoice, setSelectedVoice] = useState<string>('hu-HU-SzabolcsNeural');
+    const [selectedVoice, setSelectedVoice] = useState<string>('hu-HU-TamasNeural');
     const [availableVoices, setAvailableVoices] = useState<Array<{value: string, label: string}>>([]);
-    const [apiStatus, setApiStatus] = useState<string>('API kapcsolat ellenőrzése...');
-
-    // Debug View State
-    const [debugData, setDebugData] = useState<string>('');
+    const [apiStatus, setApiStatus] = useState<string>('Kapcsolódás...');
+    const [debugSegments, setDebugSegments] = useState<any[]>([]);
     const [currentSegmentIndex, setCurrentSegmentIndex] = useState<number>(-1);
-    const activeDebugRowRef = useRef<HTMLDivElement>(null);
-
-    // Persistence Refs for Resuming
+    
     const abortRef = useRef<boolean>(false);
-    const masterAudioBufferRef = useRef<Int16Array[]>([]);
-    const currentAudioTimeRef = useRef<number>(0);
+    const abortControllerRef = useRef<AbortController | null>(null);
+    const masterBuffersRef = useRef<Array<{buffer: AudioBuffer, startTime: number}>>([]);
     const resumeIndexRef = useRef<number>(0);
-    const processedSegmentsRef = useRef<any[]>([]);
+    const activeRowRef = useRef<HTMLDivElement>(null);
 
-    // Reset processing state if file content changes drastically (new file)
     useEffect(() => {
-        // Reset refs when file content is reset (empty)
-        if (!fileContent) {
-            masterAudioBufferRef.current = [];
-            currentAudioTimeRef.current = 0;
-            resumeIndexRef.current = 0;
-            processedSegmentsRef.current = [];
-            setDebugData('');
-            setAudioUrl('');
-            setResult('');
-            setProgress(0);
-        }
-    }, [fileContent]);
-
-    // Hangok és API állapot betöltése komponens mount-kor
-    useEffect(() => {
-        loadVoicesAndApiStatus();
-    }, []);
-
-    // Auto-scroll debug view
-    useEffect(() => {
-        if (activeDebugRowRef.current) {
-            activeDebugRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (activeRowRef.current) {
+            activeRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
     }, [currentSegmentIndex]);
 
-    const loadVoicesAndApiStatus = async () => {
-        try {
-            setStatus('API kapcsolat ellenőrzése...');
-            
-            // 1. API állapot ellenőrzése
-            const statusInfo = await edgeTTSService.getApiStatus();
-            setApiStatus(statusInfo.message);
-            
-            // 2. Hangok betöltése
-            const voices = await edgeTTSService.getAvailableVoices();
-            setAvailableVoices(voices);
-            
-            // 3. Alapértelmezett hang beállítása
-            if (voices.length > 0) {
-                // Keressük a férfi hangot először
-                const maleVoice = voices.find(v => v.label.includes('férfi'));
-                if (maleVoice) {
-                    setSelectedVoice(maleVoice.value);
-                } else {
+    useEffect(() => {
+        const initVoices = async () => {
+            try {
+                const statusInfo = await edgeTTSService.getApiStatus();
+                setApiStatus(statusInfo.message);
+                const voices = await edgeTTSService.getAvailableVoices();
+                setAvailableVoices(voices);
+                if (voices.length > 0 && !selectedVoice) {
                     setSelectedVoice(voices[0].value);
                 }
+            } catch {
+                setAvailableVoices([{ value: 'hu-HU-TamasNeural', label: 'Tamás (férfi)' }]);
             }
-            
-            console.log(`API állapot: ${statusInfo.message}, ${voices.length} hang`);
-            
-        } catch (error) {
-            console.error('API inicializálás hiba:', error);
-            setApiStatus('Hiba az API kapcsolatban');
-            
-            // Fallback hangok
-            setAvailableVoices([
-                { value: 'hu-HU-SzabolcsNeural', label: 'Szabolcs (magyar férfi)' },
-                { value: 'hu-HU-NoemiNeural', label: 'Noémi (magyar női)' },
-            ]);
+        };
+        initVoices();
+    }, []);
+
+    useEffect(() => {
+        if (fileContent) {
+            const segments = parseSrtToSegments(fileContent);
+            const validTimes = extractSrtTimestamps(fileContent);
+            const clean = validateAndFixSegments(segments, validTimes);
+            setDebugSegments(clean);
+            masterBuffersRef.current = [];
+            resumeIndexRef.current = 0;
+            setAudioUrl('');
+            setResult('');
+            setProgress(0);
+            setCurrentSegmentIndex(-1);
+            setStatus('');
         }
+    }, [fileContent]);
+
+    const processAudioSegments = async () => {
+        if (!debugSegments.length) return;
+        setIsProcessing(true);
+        setIsPaused(false);
+        abortRef.current = false;
+        abortControllerRef.current = new AbortController();
+
+        try {
+            for (let i = resumeIndexRef.current; i < debugSegments.length; i++) {
+                if (abortRef.current) return;
+
+                const segment = debugSegments[i];
+                setCurrentSegmentIndex(i);
+                setStatus(`Generálás: ${i + 1} / ${debugSegments.length}`);
+                
+                const targetDurationMs = (segment._endSec - segment._startSec) * 1000;
+
+                try {
+                    const arrayBuffer = await edgeTTSService.generateSpeech(
+                        sanitizeTextForTts(segment.text), 
+                        selectedVoice,
+                        targetDurationMs
+                    );
+                    const audioBuffer = await decodeAudioData(arrayBuffer);
+                    
+                    masterBuffersRef.current.push({
+                        buffer: audioBuffer,
+                        startTime: segment._startSec
+                    });
+
+                    if (i < debugSegments.length - 1 && !abortRef.current) {
+                        setStatus(`Várakozás (1s limit védelem)...`);
+                        await sleep(1000);
+                    }
+
+                } catch (err) {
+                    if (err instanceof TTSConnectionError) {
+                        setIsPaused(true);
+                        resumeIndexRef.current = i;
+                        playWarningSound();
+                        setStatus("Hiba: Backend hiba.");
+                        return;
+                    }
+                    throw err;
+                }
+                
+                setProgress(Math.floor(((i + 1) / debugSegments.length) * 90));
+                resumeIndexRef.current = i + 1;
+            }
+
+            setStatus("Keverés és véglegesítés...");
+            await renderAndDownload();
+            
+        } catch (error: any) {
+            setStatus(`Hiba: ${error.message}`);
+            setIsProcessing(false);
+        }
+    };
+
+    const renderAndDownload = async () => {
+        const buffers = masterBuffersRef.current;
+        if (buffers.length === 0) return;
+
+        let currentTimelinePos = 0;
+        const scheduledBuffers: Array<{buffer: AudioBuffer, startTime: number}> = [];
+
+        for (let i = 0; i < buffers.length; i++) {
+            const item = buffers[i];
+            let startTime = item.startTime;
+            if (startTime < currentTimelinePos) {
+                startTime = currentTimelinePos;
+            }
+            scheduledBuffers.push({
+                buffer: item.buffer,
+                startTime: startTime
+            });
+            currentTimelinePos = startTime + item.buffer.duration;
+        }
+
+        const totalDuration = currentTimelinePos;
+        const sampleRate = 24000;
+
+        // MÓDOSÍTÁS: 2 csatorna (sztereó) beállítása
+        const offlineCtx = new OfflineAudioContext(2, Math.ceil(totalDuration * sampleRate), sampleRate);
+
+        scheduledBuffers.forEach(item => {
+            const source = offlineCtx.createBufferSource();
+            source.buffer = item.buffer;
+            
+            // A Web Audio API automatikusan elosztja a mono jelet mindkét sztereó csatornára (panning: center)
+            source.connect(offlineCtx.destination);
+            source.start(item.startTime);
+        });
+
+        const renderedBuffer = await offlineCtx.startRendering();
+        
+        // MÓDOSÍTÁS: Az MP3 enkódernek még mindig egy mono tömböt adunk át a pcmToMp3-nak, 
+        // de a renderelt buffer bal csatornáját vesszük ki (ami most már megegyezik a jobbal).
+        const rawData = renderedBuffer.getChannelData(0); 
+        
+        const int16Data = new Int16Array(rawData.length);
+        for (let i = 0; i < rawData.length; i++) {
+            const s = Math.max(-1, Math.min(1, rawData[i]));
+            int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+
+        const mp3Blob = pcmToMp3(int16Data, sampleRate);
+        setAudioUrl(URL.createObjectURL(mp3Blob));
+        setResult("Sikeresen elkészült!");
+        setProgress(100);
+        setIsProcessing(false);
+        playSuccessChime();
     };
 
     const handleAbort = () => {
         abortRef.current = true;
+        setIsProcessing(false);
         setIsPaused(false);
-        setStatus('Folyamat megszakítása...');
-    };
-
-    const processAudioSegments = async () => {
-        if (!fileContent) return;
-        setIsProcessing(true);
-        setIsPaused(false);
-        setResult('');
-        setAudioUrl('');
-        abortRef.current = false;
-
-        // Clear State for fresh start if not resuming
-        if (resumeIndexRef.current === 0 && masterAudioBufferRef.current.length === 0) {
-            setDebugData('');
-            setCurrentSegmentIndex(-1);
-            setStatus('Feldolgozás indítása...');
-            setProgress(5);
-            masterAudioBufferRef.current = [];
-            currentAudioTimeRef.current = 0;
-            processedSegmentsRef.current = [];
-        }
-
-        try {
-            // Step 1: Prep (Only if starting fresh)
-            if (processedSegmentsRef.current.length === 0) {
-                setStatus('1. Lépés: SRT elemzése és időzítések kibontása...');
-                let segments = parseSrtToSegments(fileContent);
-                const validTimestamps = extractSrtTimestamps(fileContent);
-                const cleanSegments = validateAndFixSegments(segments, validTimestamps);
-                
-                setDebugData(JSON.stringify(cleanSegments, null, 2));
-                if (cleanSegments.length === 0) throw new Error("Nem sikerült szegmenseket kinyerni. A fájl formátuma nem felismerhető.");
-                
-                processedSegmentsRef.current = cleanSegments;
-                setProgress(15);
-            }
-
-            const cleanSegments = processedSegmentsRef.current;
-            const srtActualEndTime = getSrtEndSeconds(fileContent);
-            const MAX_ALLOWED_DURATION = (srtActualEndTime > 0 ? srtActualEndTime : (cleanSegments[cleanSegments.length - 1]?._endSec || 0)) + 45;
-
-            setStatus('2. Lépés: Hang generálása és összeillesztése...');
-            
-            // Resume Loop
-            for (let i = resumeIndexRef.current; i < cleanSegments.length; i++) {
-                if (abortRef.current) throw new Error("Folyamat megszakítva.");
-
-                const segment = cleanSegments[i];
-                setCurrentSegmentIndex(i);
-                const targetStart = segment._startSec;
-                
-                if (currentAudioTimeRef.current > MAX_ALLOWED_DURATION) {
-                    console.warn(`Hard limit reached. Current: ${currentAudioTimeRef.current}, Max: ${MAX_ALLOWED_DURATION}`);
-                    break;
-                }
-
-                // 1. Gaps
-                let gapDuration = targetStart - currentAudioTimeRef.current;
-                if (gapDuration > 30) gapDuration = 5;
-
-                if (gapDuration > 0.05) { 
-                    setStatus(`Szünet generálása (${gapDuration.toFixed(2)}s)... (${i+1}/${cleanSegments.length})`);
-                    const silencePcm = createSilence(gapDuration);
-                    masterAudioBufferRef.current.push(silencePcm);
-                    currentAudioTimeRef.current += gapDuration;
-                }
-                
-                // 2. Generate Audio with Edge-TTS (Retry Logic)
-                setStatus(`Mondat generálása (${i+1}/${cleanSegments.length})...`);
-                
-                let audioData: Int16Array | null = null;
-                let attempts = 0;
-                const maxAttempts = 5; 
-
-                // sanitize adds padding to prevent empty response on short text
-                let ttsText = sanitizeTextForTts(segment.text);
-
-                while(attempts < maxAttempts && !audioData) {
-                    if (abortRef.current) throw new Error("Folyamat megszakítva.");
-                    try {
-                        // EDGE-TTS HÍVÁS az új service-n keresztül
-                        const arrayBuffer = await edgeTTSService.generateSpeech(ttsText, selectedVoice);
-                        const uint8 = new Uint8Array(arrayBuffer);
-                        
-                        // Convert MP3 to PCM (egyszerűsítve)
-                        audioData = new Int16Array(uint8.buffer);
-                        
-                    } catch (err: any) {
-                        attempts++;
-                        const statusCode = err.status || err.response?.status || err.code || 'Unknown';
-                        const errorMessage = err.message || "";
-                        console.error(`Edge-TTS hiba (Attempt ${attempts}/${maxAttempts})`, err);
-                        
-                        let delay = 2000;
-                        if (attempts === 2) delay = 4000;
-                        if (attempts === 3) delay = 10000;
-                        if (attempts === 4) {
-                            delay = 30000; 
-                            playWarningSound();
-                        }
-
-                        // Suspend logic
-                        if (attempts >= maxAttempts) {
-                            setStatus(`Hálózati hiba (${statusCode}). Felfüggesztve. Kattints a Folytatásra.`);
-                            playWarningSound();
-                            setIsPaused(true);
-                            resumeIndexRef.current = i; 
-                            return; 
-                        }
-
-                        setStatus(`Hiba (${statusCode}). Újrapróbálkozás ${delay/1000}mp múlva... (${attempts}/${maxAttempts})`);
-                        await sleep(delay);
-                    }
-                }
-
-                if (!audioData) {
-                    // Fallback: csend
-                    const dur = segment._endSec - segment._startSec;
-                    audioData = createSilence(dur > 0 ? dur : 1);
-                }
-
-                // 3. Adaptive Speed Up
-                const rawDuration = audioData.length / 24000; // Feltételezett 24kHz
-                const targetDuration = segment._endSec - segment._startSec;
-                let speedFactor = 1.0;
-                
-                if (rawDuration > targetDuration) {
-                    speedFactor = rawDuration / targetDuration;
-                    if (speedFactor > 1.20) {
-                        console.warn(`SPEED LIMIT HIT (Segment ${i+1}): Needed ${speedFactor.toFixed(3)}x, capped at 1.20x.`);
-                        speedFactor = 1.20;
-                    } else {
-                        console.log(`Speeding up (Segment ${i+1}): ${speedFactor.toFixed(3)}x`);
-                    }
-                }
-
-                const processedAudio = speedUpPcm(audioData, speedFactor);
-                masterAudioBufferRef.current.push(processedAudio);
-                currentAudioTimeRef.current += (processedAudio.length / 24000);
-
-                const percent = 15 + Math.floor(((i + 1) / cleanSegments.length) * 75);
-                setProgress(percent);
-                
-                resumeIndexRef.current = i + 1;
-            }
-
-            if (abortRef.current) throw new Error("Folyamat megszakítva.");
-
-            setCurrentSegmentIndex(cleanSegments.length);
-
-            // Step 3: Final Encoding
-            setStatus('3. Lépés: MP3 Konvertálás...');
-            
-            const totalLength = masterAudioBufferRef.current.reduce((acc, curr) => acc + curr.length, 0);
-            const finalPcm = new Int16Array(totalLength);
-            let offset = 0;
-            masterAudioBufferRef.current.forEach(arr => {
-                finalPcm.set(arr, offset);
-                offset += arr.length;
-            });
-
-            const mp3Blob = pcmToMp3(finalPcm, 24000); 
-            const url = URL.createObjectURL(mp3Blob);
-            
-            setAudioUrl(url);
-            setResult("A hangfájl sikeresen elkészült! Töltsd le az alábbi gombbal.");
-            setProgress(100);
-            playSuccessChime();
-            setIsProcessing(false);
-
-        } catch (error: any) {
-            if (abortRef.current) {
-                setStatus('A folyamat a felhasználó kérésére megszakadt.');
-            } else {
-                console.error(error);
-                setStatus(`Hiba történt: ${error.message || 'Ismeretlen hiba'}`);
-                setResult(`HIBA: ${error.message}`);
-            }
-            setIsProcessing(false);
-            setIsPaused(false);
-            abortRef.current = false;
-        }
+        if (onAbort) onAbort();
     };
 
     return (
-        <div className="space-y-6 animate-fade-in">
-             {/* Settings */}
-             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-800/50 p-4 rounded-lg border border-slate-700">
-                <div className="text-slate-400 text-sm p-2 flex flex-col">
-                    <span>Edge-TTS Backend</span>
-                    <span className="text-xs mt-1 text-blue-300">{apiStatus}</span>
-                </div>
+        <div className="flex flex-col h-full space-y-4">
+            <div className="bg-slate-800 p-4 rounded-lg flex justify-between items-center shadow-inner">
                 <div>
-                   <label className="block text-sm font-medium text-slate-400 mb-2">Hang kiválasztása</label>
-                   <select 
-                      value={selectedVoice}
-                      onChange={(e) => setSelectedVoice(e.target.value)}
-                      disabled={isProcessing || availableVoices.length === 0}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-sm text-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
-                   >
-                      {availableVoices.length === 0 ? (
-                          <option value="">Hangok betöltése...</option>
-                      ) : (
-                          availableVoices.map((voice) => (
-                              <option key={voice.value} value={voice.value}>
-                                  {voice.label}
-                              </option>
-                          ))
-                      )}
-                   </select>
-                   <p className="text-xs text-slate-500 mt-1">
-                     {availableVoices.length} magyar hang elérhető
-                   </p>
+                    <p className="text-xs text-slate-400 mb-1">Választott hang:</p>
+                    <select 
+                        value={selectedVoice} 
+                        onChange={(e) => setSelectedVoice(e.target.value)}
+                        disabled={isProcessing || isPaused}
+                        className="bg-slate-700 text-white rounded px-2 py-1 text-sm w-64 border border-slate-600 focus:outline-none focus:border-blue-500 cursor-pointer"
+                    >
+                        {availableVoices.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+                    </select>
+                </div>
+                <div className="text-right">
+                    <p className="text-[10px] text-slate-500 truncate max-w-[200px]">{filename || "Nincs fájl"}</p>
+                    <div className="text-2xl font-mono font-bold text-blue-400">{progress}%</div>
                 </div>
             </div>
 
-            {/* Debug Data View */}
-            {debugData && (
-                <div className="space-y-2">
-                    <label className="block text-sm font-medium text-yellow-500">
-                        🐛 Debug: Tervezett Időzítések (Kliens oldali)
-                    </label>
-                    <div className="w-full bg-slate-950 border border-yellow-700/50 rounded-lg p-3 text-xs font-mono overflow-auto max-h-60 shadow-inner">
-                        {(() => {
-                        try {
-                            const parsed = JSON.parse(debugData);
-                            return (
-                            <div className="flex flex-col gap-1">
-                                {parsed.map((seg: any, idx: number) => {
-                                const isDone = idx < currentSegmentIndex;
-                                const isCurrent = idx === currentSegmentIndex;
-                                
-                                let containerClass = "p-1 rounded border border-transparent transition-all duration-300";
-                                let textClass = "text-slate-500";
-                                
-                                if (isDone) {
-                                    containerClass = "p-1 rounded border-green-900/30 bg-green-900/10";
-                                    textClass = "text-green-400 opacity-70";
-                                } else if (isCurrent) {
-                                    containerClass = "p-1 rounded border-yellow-700/50 bg-yellow-900/20 shadow-md";
-                                    textClass = "text-yellow-300 font-bold";
-                                }
-                                
-                                return (
-                                    <div 
-                                    key={idx} 
-                                    ref={isCurrent ? activeDebugRowRef : null}
-                                    className={containerClass}
-                                    >
-                                    <div className={`flex gap-2 ${textClass}`}>
-                                        <span className="select-none opacity-50 w-6 text-right">{idx + 1}.</span>
-                                        <span className="whitespace-pre-wrap break-words">{JSON.stringify(seg)}</span>
-                                    </div>
-                                    </div>
-                                );
-                                })}
-                            </div>
-                            );
-                        } catch (e) {
-                            return <pre className="text-yellow-100/80 whitespace-pre-wrap">{debugData}</pre>;
-                        }
-                        })()}
-                    </div>
-                </div>
-            )}
-
-            {/* Status & Progress */}
-            {status && (
-                <div className={`p-3 rounded-lg text-sm border ${status.startsWith('Hiba') ? 'bg-red-900/20 border-red-800 text-red-300' : (status.includes('Felfüggesztve') || status.includes('Figyelmeztetés') ? 'bg-yellow-900/20 border-yellow-800 text-yellow-300' : 'bg-blue-900/20 border-blue-800 text-blue-300')}`}>
-                {status}
-                </div>
-            )}
-            
-            {isProcessing && (
-                <div className="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden">
-                    <div 
-                        className={`h-2.5 rounded-full transition-all duration-300 ease-out ${isPaused ? 'bg-yellow-500' : 'bg-blue-500'}`}
-                        style={{ width: `${progress}%` }}
-                    ></div>
-                    <div className="text-right text-xs text-slate-500 mt-1">{progress}%</div>
-                </div>
-            )}
-
-            {/* Actions */}
-            <div className="flex justify-end pt-4 border-t border-slate-700 space-x-3">
-                 {isPaused && (
-                    <button
-                    onClick={processAudioSegments}
-                    className="px-6 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium transition-colors focus:ring-2 focus:ring-green-500 outline-none animate-pulse"
-                    >
-                    Folytatás
-                    </button>
-                 )}
-                 
-                 {isProcessing || isPaused ? (
-                    <button
-                    onClick={handleAbort}
-                    className="px-6 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white font-medium transition-colors focus:ring-2 focus:ring-red-500 outline-none"
-                    >
-                    Megszakítás
-                    </button>
-                 ) : (
-                    <button
-                    onClick={processAudioSegments}
-                    disabled={!fileContent}
-                    className="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium transition-colors focus:ring-2 focus:ring-blue-500 outline-none"
-                    >
-                    Indítás
-                    </button>
-                 )}
-            </div>
-
-            {/* Results */}
-            {result && !isProcessing && !isPaused && (
-                <div className="mt-6 space-y-4 animate-fade-in">
-                <h3 className="text-lg font-bold text-white border-b border-slate-700 pb-2">Eredmény</h3>
-                    <div className="bg-slate-800/50 p-6 rounded-xl border border-slate-700 text-center">
-                    <p className={`${result.startsWith('HIBA') ? 'text-red-400' : 'text-green-400'} mb-4 font-medium`}>{result}</p>
-                    {audioUrl && (
-                        <div className="space-y-4">
-                            <audio controls src={audioUrl} className="w-full" />
-                            <a 
-                                href={audioUrl} 
-                                download={filename ? filename.replace(/\.[^/.]+$/, "") + "_" + (selectedVoice.includes('Szabolcs') ? "ferfi" : "noi") + ".mp3" : "generated_audio.mp3"}
-                                className="inline-block px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold transition-all transform hover:scale-105 shadow-lg shadow-green-900/20"
+            <div className="flex-1 overflow-auto bg-slate-900 rounded-lg border border-slate-700 custom-scrollbar">
+                <table className="w-full text-[11px] text-left border-collapse">
+                    <thead className="sticky top-0 bg-slate-800 z-10 shadow-sm">
+                        <tr className="text-slate-400 uppercase tracking-wider border-b border-slate-700">
+                            <th className="p-2 w-20">Időpont</th>
+                            <th className="p-2 w-16 text-center">Hossz</th>
+                            <th className="p-2">Szöveg</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {debugSegments.length > 0 ? debugSegments.map((seg, idx) => (
+                            <tr 
+                                key={idx} 
+                                ref={idx === currentSegmentIndex ? (activeRowRef as any) : null}
+                                className={`transition-colors duration-200 ${idx === currentSegmentIndex ? 'bg-blue-600/20 text-blue-100' : 'text-slate-400 hover:bg-slate-800/50'}`}
                             >
-                                MP3 Letöltése
-                            </a>
-                        </div>
-                    )}
-                    </div>
+                                <td className="p-2 font-mono border-b border-slate-800/50">{seg.startTime}</td>
+                                <td className="p-2 font-mono text-center text-slate-500 border-b border-slate-800/50">
+                                    {(seg._endSec - seg._startSec).toFixed(1)}s
+                                </td>
+                                <td className="p-2 border-b border-slate-800/50 leading-relaxed">{seg.text}</td>
+                            </tr>
+                        )) : (
+                            <tr>
+                                <td colSpan={3} className="p-8 text-center text-slate-500 italic">Nincs betöltött fájl...</td>
+                            </tr>
+                        )}
+                    </tbody>
+                </table>
+            </div>
+
+            {status && (
+                <div className="flex items-center justify-center space-x-2 text-sm text-blue-400 py-1">
+                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-ping"></span>
+                    <span>{status}</span>
+                </div>
+            )}
+
+            <div className="flex space-x-3">
+                {isPaused ? (
+                    <button onClick={processAudioSegments} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold transition-all shadow-lg">Folytatás</button>
+                ) : !isProcessing ? (
+                    <button 
+                        onClick={processAudioSegments} 
+                        disabled={!fileContent}
+                        className={`flex-1 py-3 rounded-xl font-bold transition-all shadow-lg ${!fileContent ? 'bg-slate-700 text-slate-500' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}
+                    >
+                        Hang generálása
+                    </button>
+                ) : (
+                    <button onClick={handleAbort} className="flex-1 bg-red-600 hover:bg-red-700 text-white py-3 rounded-xl font-bold transition-all shadow-lg">Leállítás</button>
+                )}
+            </div>
+
+            {audioUrl && (
+                <div className="bg-slate-800 p-4 rounded-xl border border-blue-500/20 shadow-xl">
+                    <audio controls src={audioUrl} className="w-full mb-4 h-10" />
+                    <a 
+                        href={audioUrl} 
+                        download={`${filename.replace(/\.[^/.]+$/, "")}.mp3`} 
+                        className="block w-full text-center bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-lg font-bold"
+                    >
+                        MP3 Letöltése
+                    </a>
                 </div>
             )}
         </div>

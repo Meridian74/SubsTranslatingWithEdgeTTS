@@ -47,7 +47,14 @@ export default function App() {
 
   const closeModal = () => {
     setIsModalOpen(false);
-    setActiveTool(null);
+    // Kis késleltetés, hogy a bezárás animációja lejátszódjon
+    setTimeout(() => {
+      setActiveTool(null);
+      // Fájl állapotok resetelése
+      setFile(null);
+      setFileContent('');
+      setFileReadError('');
+    }, 300);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -77,7 +84,6 @@ export default function App() {
     };
     reader.readAsText(file, fileEncoding);
   }, [file, fileEncoding]);
-
 
   return (
     <div className="min-h-screen bg-background text-slate-100 p-6 md:p-12">
@@ -165,22 +171,33 @@ export default function App() {
 
           {/* Tool Specific Logic - CSAK hanggenerátor */}
           {activeTool?.id === ToolId.SRT_AUDIO_GENERATOR && (
-              <SrtAudioGenerator 
-                 fileContent={fileContent} 
-                 filename={file ? file.name : ''} 
-              />
+            <SrtAudioGenerator 
+            fileContent={fileContent} 
+            filename={file ? file.name : ''} 
+            onAbort={closeModal}  
+            />
           )}
           
           {/* Információs szekció */}
           <div className="bg-blue-900/20 border border-blue-800 rounded-lg p-4">
             <h4 className="text-blue-300 font-medium mb-2">ℹ️ Információ a szolgáltatásról:</h4>
             <ul className="text-sm text-blue-200 space-y-1">
-              <li>• Microsoft Edge-TTS neurális magyar hangok (Noémi, Szabolcs)</li>
+              <li>• Microsoft Edge-TTS neurális magyar hangok (Noémi, Tamás (vagy Szabolcs))</li>
               <li>• Teljesen ingyenes használat, nincs API kulcs szükséges</li>
-              <li>• Automatikus időzítés-kezelés és hanggyorsítás (max 20%)</li>
+              <li>• Automatikus időzítés-kezelés és hanggyorsítás (max 25%)</li>
               <li>• Kimenet: MP3 fájl letölthető formátumban</li>
-              <li>• Lokális futtatás: Python backend szükséges a hanggeneráláshoz</li>
+              <li>• Lokális futtatás: Python backend kiegészítő alkalmazás (FastAPI) szükséges a hanggeneráláshoz</li>
             </ul>
+          </div>
+          
+          {/* Bezárás gomb (alternatív) */}
+          <div className="flex justify-end pt-2">
+            <button
+              onClick={closeModal}
+              className="px-4 py-2 text-sm text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition-colors border border-slate-700"
+            >
+              Bezárás
+            </button>
           </div>
         </div>
       </Modal>
